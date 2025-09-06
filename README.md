@@ -114,3 +114,5 @@ Response:
 ```bash
 aws logs get-log-events --log-group-name /ecs/smartlink ...
 ```
+
+Note: account IDs are replaced with <YOUR_ACCOUNT_ID> placeholders for security.
