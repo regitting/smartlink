@@ -1,10 +1,14 @@
 import os
 from user_agents import parse
 
-_reader = None
+def get_client_ip(req):
+    xff = req.headers.get("X-Forwarded-For")
+    if xff:
+        return xff.split(",")[0].strip()
+    return req.remote_addr
 
+_reader = None
 def _get_reader():
-    """Lazy-load geoip reader; return False if DB not present."""
     global _reader
     if _reader is not None:
         return _reader
@@ -21,7 +25,7 @@ def lookup_country(ip: str):
     if not r or not ip:
         return None
     try:
-        return r.country(ip).country.iso_code  # e.g., "US"
+        return r.country(ip).country.iso_code
     except Exception:
         return None
 

@@ -1,6 +1,6 @@
 from flask import Blueprint, request, redirect, jsonify, abort, send_file
 from .models import db, Link, Click
-from .utils import lookup_country, parse_device
+from .utils import lookup_country, parse_device, get_client_ip
 import qrcode, io
 
 bp = Blueprint('main', __name__)
@@ -21,18 +21,25 @@ def go(slug):
     link = Link.query.filter_by(slug=slug, disabled=False).first()
     if not link or link.is_expired():
         abort(404)
+
     target = link.pick_target()
+
+    # --- use helper to resolve client IP (X-Forwarded-For or remote_addr)
+    ip = get_client_ip(request)
+
     c = Click(
         link_id=link.id,
-        ip=request.headers.get('X-Forwarded-For', request.remote_addr),
+        ip=ip,
         referrer=request.referrer,
-        country=lookup_country(request.remote_addr),
-        device=parse_device(request.headers.get('User-Agent',''))
+        country=lookup_country(ip),
+        device=parse_device(request.headers.get('User-Agent', ''))
     )
     db.session.add(c); db.session.commit()
+
     if link.one_time:
         link.disabled = True
         db.session.commit()
+
     return redirect(target, code=302)
 
 @bp.get('/api/links/<slug>/metrics')
@@ -60,3 +67,16 @@ def qr(slug):
     img = qrcode.make(url)
     buf = io.BytesIO(); img.save(buf, format='PNG'); buf.seek(0)
     return send_file(buf, mimetype='image/png')
+
+@bp.get('/_debug/ip')
+def debug_ip():
+    ip = get_client_ip(request)
+    return jsonify({'ip': ip, 'country': lookup_country(ip)})
+
+@bp.get('/health')
+def health():
+    return jsonify({'status': 'ok'}), 200
+
+@bp.get("/")
+def root():
+    return "Smartlink is live", 200
