@@ -1,4 +1,4 @@
-from flask import Blueprint, request, redirect, jsonify, abort, send_file
+from Flask import Blueprint, request, redirect, jsonify, abort, send_file
 from .models import db, Link, Click
 from .utils import lookup_country, parse_device, get_client_ip
 import qrcode, io
