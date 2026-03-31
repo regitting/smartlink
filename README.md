@@ -1,11 +1,11 @@
-# Smartlink 🔗  
+# Smartlink  
 *A URL Shortener & Analytics Service*  
 
 Smartlink is a lightweight Flask-based web service that lets you shorten links, generate QR codes, and track clicks by device and country. It’s containerized with Docker and deployed to **AWS ECS Fargate**, using **ECR** for image storage and **CloudWatch** for logging.  
 
 ---
 
-## ✨ Features
+## Features
 - **Shorten Links** – create unique slugs for redirecting to target URLs.  
 - **Click Analytics** – track device type, referrer, and geolocation.  
 - **QR Code Generation** – instantly generate PNG QR codes for shortlinks.  
@@ -14,7 +14,7 @@ Smartlink is a lightweight Flask-based web service that lets you shorten links, 
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 Flask App → Docker Container → AWS ECR → ECS Fargate → CloudWatch Logs  
                           ↑  
                        SQLite DB (dev)  
@@ -26,7 +26,7 @@ Flask App → Docker Container → AWS ECR → ECS Fargate → CloudWatch Logs
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Run locally (Docker)
 ```bash
@@ -37,7 +37,7 @@ docker build -t smartlink .
 docker run -p 8000:8000 smartlink
 ```
 
-## 🌐 API Endpoints
+## API Endpoints
 ```bash
 curl http://localhost:8000/health
 ```
@@ -102,7 +102,7 @@ Response:
 }
 ```
 
-## ☁️ Deployment (AWS ECS)
+## Deployment (AWS ECS)
 
 1. Build & push Docker image to ECR
 
