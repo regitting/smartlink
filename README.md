@@ -45,6 +45,34 @@ Optional `expires_at` is an ISO 8601 timestamp; offsets are converted to UTC,
 and timestamps without an offset are interpreted as UTC. SQLite stores UTC
 without timezone information. Invalid requests return 400; duplicate slugs return 409.
 
+### Proxy trust and concurrent redirects
+`TRUSTED_PROXY_HOPS` defaults to `0`: forwarded headers are ignored and
+analytics uses the direct peer IP. Set it to the exact number of trusted
+reverse proxies supplying `X-Forwarded-For` (for example, `1`). Werkzeug selects
+the corresponding value from the right. This is a hop count, not an IP allowlist:
+only enable it when network access to the app is restricted to those proxies
+and they sanitize or append forwarded headers. Forwarded host, scheme, port,
+and prefix headers are not trusted. The same settings can be passed to `create_app`.
+`ENABLE_DEBUG_IP` defaults to false; the existing `/_debug/ip` route returns 404
+unless explicitly enabled. It has no authentication, so leave it disabled publicly.
+
+Metrics aggregate all clicks in SQL and retain the existing response format.
+One-time redirects conditionally update an enabled, unexpired link to disabled
+and record the click in the same transaction. A losing request returns 404
+without a click; transaction failure rolls back both operations. The update runs
+before reads to avoid SQLite snapshot/lock upgrade failures. Regular links
+continue returning 302 and recording each click.
+
+SQLite serializes writers, including regular redirects (which also write clicks).
+Requests wait up to the connection's busy timeout (sqlite3 defaults to 5 seconds);
+if a lock outlasts it, redirects return 503 with `Retry-After: 1`, without a click
+or consumed link. Configure the timeout via `SQLALCHEMY_ENGINE_OPTIONS` /
+`connect_args.timeout` if needed. This requires a shared database with reliable
+local filesystem locking across workers; separate SQLite files on different
+instances cannot coordinate redemption. Consumption commits before the HTTP
+response: if delivery fails afterward, the link remains consumed. No database
+transaction can guarantee that a client receives the response exactly once.
+
 ### Run locally (Docker)
 ```bash
 # Build image
@@ -107,7 +135,8 @@ curl -o qr.png -X POST http://localhost:8000/api/qr/hello
 ```
 Output: saves qr.png in the current directory.
 
-Debug IP
+Debug IP (disabled by default; enable only in a controlled local environment
+with `ENABLE_DEBUG_IP=1`)
 ```bash
 curl http://localhost:8000/_debug/ip
 ```
