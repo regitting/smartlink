@@ -2,9 +2,7 @@ import os
 from user_agents import parse
 
 def get_client_ip(req):
-    xff = req.headers.get("X-Forwarded-For")
-    if xff:
-        return xff.split(",")[0].strip()
+    # ProxyFix is the only authority for forwarded headers.
     return req.remote_addr
 
 _reader = None
