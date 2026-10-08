@@ -1,19 +1,28 @@
-from Flask import Blueprint, request, redirect, jsonify, abort, send_file
+from flask import Blueprint, request, redirect, jsonify, abort, send_file
 from .models import db, Link, Click
 from .utils import lookup_country, parse_device, get_client_ip
+from sqlalchemy.exc import IntegrityError
+from werkzeug.exceptions import BadRequest
 import qrcode, io
 
 bp = Blueprint('main', __name__)
 
 @bp.post('/api/links')
 def create_link():
-    data = request.get_json(force=True)
-    if not data or 'slug' not in data:
-        return jsonify({'error': 'slug is required'}), 400
-    if Link.query.filter_by(slug=data['slug']).first():
+    try:
+        data = request.get_json(force=True)
+        link = Link.from_json(data)
+    except (BadRequest, ValueError) as exc:
+        message = str(exc) if isinstance(exc, ValueError) else 'invalid JSON'
+        return jsonify({'error': message}), 400
+    if Link.query.filter_by(slug=link.slug).first():
         return jsonify({'error': 'slug already exists'}), 409
-    link = Link.from_json(data)
-    db.session.add(link); db.session.commit()
+    db.session.add(link)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({'error': 'slug already exists'}), 409
     return jsonify({'slug': link.slug}), 201
 
 @bp.get('/<slug>')

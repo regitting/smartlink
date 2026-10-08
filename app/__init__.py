@@ -4,12 +4,15 @@ from .models import db
 from werkzeug.middleware.proxy_fix import ProxyFix
 from .main import bp as main_bp
 
-def create_app():
+def create_app(config=None):
     app = Flask(__name__)
 
     app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///smartlink.db')
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev')
+
+    if config is not None:
+        app.config.update(config)
 
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1) #trust proxy headers
 

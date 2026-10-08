@@ -28,6 +28,23 @@ Flask App → Docker Container → AWS ECR → ECS Fargate → CloudWatch Logs
 
 ## Getting Started
 
+### Local development and tests
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+python -m pytest
+python -m flask --app wsgi:app run --port 8000
+```
+
+Tests use temporary SQLite databases and do not require GeoIP data or AWS access.
+Link creation requires a slug of 1–64 letters, digits, underscores or hyphens
+(`health` is reserved), and either `target` or a nonempty `ab_targets` URL list.
+Destinations must use HTTP or HTTPS. Optional `one_time` is a JSON boolean.
+Optional `expires_at` is an ISO 8601 timestamp; offsets are converted to UTC,
+and timestamps without an offset are interpreted as UTC. SQLite stores UTC
+without timezone information. Invalid requests return 400; duplicate slugs return 409.
+
 ### Run locally (Docker)
 ```bash
 # Build image
@@ -50,7 +67,7 @@ Create a Shortlink
 ```bash
 curl -X POST http://localhost:8000/api/links \
   -H "Content-Type: application/json" \
-  -d '{"slug":"hello","url":"https://example.com"}'
+  -d '{"slug":"hello","target":"https://example.com"}'
 ```
 Response:
 ```bash
