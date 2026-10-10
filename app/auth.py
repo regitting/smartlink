@@ -148,7 +148,7 @@ def identity(required=True):
                 claims = jwt.decode(
                     parts[1], current_app.config['JWT_SIGNING_KEY'], algorithms=['HS256'],
                     issuer=current_app.config['JWT_ISSUER'], audience=current_app.config['JWT_AUDIENCE'],
-                    leeway=30, options={'require': ['sub', 'iss', 'aud', 'iat', 'nbf', 'exp', 'jti', 'token_version']},
+                    leeway=30, options={'strict_aud': True, 'require': ['sub', 'iss', 'aud', 'iat', 'nbf', 'exp', 'jti', 'token_version']},
                 )
                 if not isinstance(claims['sub'], str) or not re.fullmatch(r'[1-9][0-9]{0,9}', claims['sub']):
                     raise ValueError('invalid subject')

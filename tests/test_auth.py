@@ -101,7 +101,7 @@ def test_login_token_and_logout_all(client, app):
 
 
 @pytest.mark.parametrize('change', ['expired', 'future', 'issuer', 'audience', 'subject', 'version',
-    'missing_exp', 'missing_jti', 'bool_exp', 'long_lifetime', 'bad_jti', 'deleted_user', 'inactive_user', 'wrong_key', 'algorithm', 'unsigned', 'tampered'])
+    'missing_exp', 'missing_jti', 'bool_exp', 'multiple_audiences', 'long_lifetime', 'bad_jti', 'deleted_user', 'inactive_user', 'wrong_key', 'algorithm', 'unsigned', 'tampered'])
 def test_invalid_tokens(client, app, change):
     from app.models import User, db
     headers = account(client)
@@ -118,6 +118,7 @@ def test_invalid_tokens(client, app, change):
     elif change == 'missing_exp': del claims['exp']
     elif change == 'missing_jti': del claims['jti']
     elif change == 'bool_exp': claims['exp'] = True
+    elif change == 'multiple_audiences': claims['aud'] = ['smartlink-api', 'other-api']
     elif change == 'long_lifetime': claims['exp'] += 10000
     elif change == 'bad_jti': claims['jti'] = 'bad'
     elif change in ('deleted_user', 'inactive_user'):
@@ -285,3 +286,20 @@ def test_real_shared_redis_counters(app):
             with application.app_context():
                 db.session.remove()
                 db.engine.dispose()
+
+
+def test_auth_request_size_is_bounded(client):
+    response = client.post('/api/auth/register', data='x' * (1024 * 1024 + 1), content_type='application/json')
+    assert response.status_code == 413
+    assert response.json['code'] == 'invalid_request'
+
+
+def test_auth_database_failure_returns_safe_error(client, app, monkeypatch):
+    from app.models import db
+    from sqlalchemy.exc import OperationalError
+    def unavailable():
+        raise OperationalError('INSERT', {}, RuntimeError('private database detail'))
+    monkeypatch.setattr(db.session, 'commit', unavailable)
+    response = register(client)
+    assert response.status_code == 503
+    assert 'private database detail' not in response.get_data(as_text=True)
