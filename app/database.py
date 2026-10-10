@@ -1,6 +1,9 @@
 from pathlib import Path
 
+import sqlite3
 import click
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
@@ -48,3 +51,9 @@ def register_database_commands(app):
         except RuntimeError as exc:
             raise click.ClickException(str(exc)) from None
         click.echo('Database is ready')
+
+
+@event.listens_for(Engine, 'connect')
+def enable_sqlite_foreign_keys(connection, record):
+    if isinstance(connection, sqlite3.Connection):
+        connection.execute('PRAGMA foreign_keys=ON')
