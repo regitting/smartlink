@@ -26,7 +26,9 @@ EXPOSE 8000
 
 # Healthcheck (calls your /health route)
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
-  CMD curl -fsS http://localhost:8000/health || exit 1
+  CMD curl -fsS http://localhost:8000/api/ready || exit 1
 
+# Migrations are explicit: run alembic upgrade head before starting this image.
+# Fail clearly if the database is unavailable or not migrated.
 # Start app with Gunicorn
-CMD ["gunicorn", "wsgi:app", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "--timeout", "60"]
+CMD ["sh", "-c", "flask --app wsgi:app db-check && exec gunicorn wsgi:app --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 60"]

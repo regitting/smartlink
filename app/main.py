@@ -108,3 +108,13 @@ def health():
 @bp.get("/")
 def root():
     return "Smartlink is live", 200
+
+@bp.get('/api/ready')
+def ready():
+    from .database import check_database
+    from sqlalchemy.exc import SQLAlchemyError
+    try:
+        check_database()
+    except (SQLAlchemyError, RuntimeError):
+        return jsonify({'status': 'not ready'}), 503
+    return jsonify({'status': 'ok'}), 200

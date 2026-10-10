@@ -12,6 +12,12 @@ def app(tmp_path, monkeypatch):
         'TESTING': True,
         'SQLALCHEMY_DATABASE_URI': f'sqlite:///{tmp_path / "test.db"}',
     })
+    from alembic import command
+    from app.database import migration_config
+    with application.app_context(), module.db.engine.begin() as connection:
+        config = migration_config()
+        config.attributes['connection'] = connection
+        command.upgrade(config, 'head')
     monkeypatch.setattr('app.main.lookup_country', lambda ip: None)
     yield application
     with application.app_context():
