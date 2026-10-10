@@ -303,3 +303,16 @@ def test_auth_database_failure_returns_safe_error(client, app, monkeypatch):
     response = register(client)
     assert response.status_code == 503
     assert 'private database detail' not in response.get_data(as_text=True)
+
+
+def test_deleted_user_id_is_not_reused_by_sqlite(client, app):
+    from app.models import User, db
+    old = account(client)
+    old_id = client.get('/api/auth/me', headers=old).json['user']['id']
+    with app.app_context():
+        db.session.delete(User.query.one())
+        db.session.commit()
+    new = account(client, 'new@example.com')
+    new_id = client.get('/api/auth/me', headers=new).json['user']['id']
+    assert new_id != old_id
+    assert client.get('/api/auth/me', headers=old).status_code == 401

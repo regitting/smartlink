@@ -28,6 +28,7 @@ def upgrade():
         sa.Column('token_version', sa.Integer(), nullable=False, server_default='0'),
         sa.UniqueConstraint('email'),
         sa.CheckConstraint('token_version >= 0', name='ck_user_token_version'),
+        sqlite_autoincrement=True,
     )
     if connection.dialect.name == 'sqlite':
         # SQLite supports a nullable REFERENCES column directly. Avoid batch

@@ -55,7 +55,8 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=utc_now, nullable=False)
     is_active = db.Column(db.Boolean, default=True, server_default=db.true(), nullable=False)
     token_version = db.Column(db.Integer, default=0, server_default='0', nullable=False)
-    __table_args__ = (db.CheckConstraint('token_version >= 0', name='ck_user_token_version'),)
+    __table_args__ = (db.CheckConstraint('token_version >= 0', name='ck_user_token_version'),
+                      {'sqlite_autoincrement': True})
     links = db.relationship('Link', back_populates='owner', passive_deletes='all')
 
 
