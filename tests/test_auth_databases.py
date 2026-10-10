@@ -121,3 +121,122 @@ def test_migration_refuses_orphans_on_sqlite(app, tmp_path):
         assert connection.execute('SELECT link_id FROM click').fetchone() == (999,)
         assert connection.execute('SELECT version_num FROM alembic_version').fetchone() == ('0002',)
     with configured.app_context(): db.engine.dispose()
+
+
+def test_concurrent_password_rehash(backend_app):
+    from argon2 import PasswordHasher
+    from app.models import User, db
+    from test_auth import PASSWORD
+    client = backend_app.test_client()
+    assert register(client).status_code == 201
+    old = PasswordHasher(time_cost=1, memory_cost=8192, parallelism=1).hash(PASSWORD)
+    with backend_app.app_context():
+        User.query.one().password_hash = old
+        db.session.commit()
+        engine = db.engine
+    barrier = Barrier(2)
+    def synchronize(connection, cursor, statement, parameters, context, many):
+        if statement.upper().startswith('UPDATE APP_USER'):
+            barrier.wait(timeout=15)
+    event.listen(engine, 'before_cursor_execute', synchronize)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda _: login(backend_app.test_client()), range(2)))
+    finally:
+        event.remove(engine, 'before_cursor_execute', synchronize)
+    assert [r.status_code for r in responses] == [200, 200]
+    for response in responses:
+        assert client.get('/api/auth/me', headers={'Authorization': 'Bearer ' + response.json['access_token']}).status_code == 200
+    with backend_app.app_context():
+        assert not backend_app.extensions['password_hasher'].check_needs_rehash(User.query.one().password_hash)
+
+
+@pytest.mark.parametrize('operation', ['redeem', 'delete'])
+def test_patch_race_on_both_databases(backend_app, operation):
+    from app.models import db, Click, Link
+    from threading import Event
+    client = backend_app.test_client()
+    headers = account(client)
+    assert client.post('/api/links', headers=headers, json={'slug': 'race', 'target': 'https://example.com', 'one_time': True}).status_code == 201
+    with backend_app.app_context(): engine = db.engine
+    read_finished, competitor_finished = Event(), Event()
+    def pause_patch(connection, cursor, statement, parameters, context, many):
+        if statement.startswith('UPDATE link SET') and 'link.target =' in statement:
+            read_finished.set()
+            assert competitor_finished.wait(15)
+    event.listen(engine, 'before_cursor_execute', pause_patch)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(lambda: backend_app.test_client().patch('/api/links/race', headers=headers, json={'disabled': False}))
+            assert read_finished.wait(15)
+            try:
+                response = client.get('/race') if operation == 'redeem' else client.delete('/api/links/race', headers=headers)
+                assert response.status_code == (302 if operation == 'redeem' else 204)
+            finally:
+                competitor_finished.set()
+            assert pending.result(timeout=15).status_code == (409 if operation == 'redeem' else 404)
+    finally:
+        event.remove(engine, 'before_cursor_execute', pause_patch)
+    assert client.get('/race').status_code == 404
+    with backend_app.app_context():
+        assert Link.query.one().disabled
+        assert Click.query.count() == (1 if operation == 'redeem' else 0)
+
+
+def test_interrupted_sqlite_migration_rolls_back_and_retries(app):
+    from sqlalchemy import inspect
+    from app.models import db
+    migrate(app, 'downgrade', '0002')
+    with app.app_context():
+        db.session.execute(text("INSERT INTO link (id,slug,target) VALUES (17,'kept','https://example.com')"))
+        db.session.execute(text('INSERT INTO click (id,link_id) VALUES (19,17)'))
+        db.session.commit()
+        engine = db.engine
+    def interrupt(connection, cursor, statement, parameters, context, many):
+        if statement.startswith('CREATE INDEX ix_link_owner_id_id'):
+            raise RuntimeError('injected migration interruption')
+    event.listen(engine, 'before_cursor_execute', interrupt)
+    try:
+        with pytest.raises(RuntimeError, match='injected migration interruption'):
+            migrate(app)
+    finally:
+        event.remove(engine, 'before_cursor_execute', interrupt)
+    with engine.connect() as connection:
+        assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar() == '0002'
+        assert 'app_user' not in inspect(connection).get_table_names()
+        assert not {'owner_id','deleted_at'} & {c['name'] for c in inspect(connection).get_columns('link')}
+        assert connection.execute(text('SELECT id,link_id FROM click')).one() == (19,17)
+        assert connection.execute(text('PRAGMA foreign_keys')).scalar() == 1
+    migrate(app)
+    with engine.connect() as connection:
+        assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar() == '0003'
+        assert connection.execute(text('SELECT id,owner_id,deleted_at FROM link')).one() == (17,None,None)
+        assert connection.execute(text('SELECT id,link_id FROM click')).one() == (19,17)
+
+
+@pytest.mark.parametrize('change', ['password', 'inactive', 'revoked'])
+def test_login_rechecks_concurrently_changed_account(backend_app, monkeypatch, change):
+    from app.models import User, db
+    from sqlalchemy import update
+    from test_auth import PASSWORD
+    client = backend_app.test_client()
+    assert register(client).status_code == 201
+    hasher = backend_app.extensions['password_hasher']
+    original_verify = hasher.verify
+    changed = False
+    def verify_then_change(stored, password):
+        nonlocal changed
+        result = original_verify(stored, password)
+        if not changed:
+            changed = True
+            values = {'password_hash': hasher.hash('a different valid password')} if change == 'password' else ({'is_active': False} if change == 'inactive' else {'token_version': User.token_version + 1})
+            with backend_app.app_context():
+                db.session.execute(update(User).values(**values))
+                db.session.commit()
+        return result
+    from types import SimpleNamespace
+    monkeypatch.setitem(backend_app.extensions, 'password_hasher', SimpleNamespace(
+        verify=verify_then_change, hash=hasher.hash, check_needs_rehash=hasher.check_needs_rehash))
+    response = login(client)
+    assert response.status_code == 401
+    assert response.json['code'] == 'invalid_credentials'

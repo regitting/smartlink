@@ -316,3 +316,40 @@ def test_deleted_user_id_is_not_reused_by_sqlite(client, app):
     new_id = client.get('/api/auth/me', headers=new).json['user']['id']
     assert new_id != old_id
     assert client.get('/api/auth/me', headers=old).status_code == 401
+
+
+@pytest.mark.parametrize('email', [None, 7, 'bad', 'x' * 1025, '\ud800@example.com'])
+def test_canonical_email_rejects_invalid_input(client, email):
+    for endpoint in ('register', 'login'):
+        response = client.post('/api/auth/' + endpoint, json={'email': email, 'password': PASSWORD})
+        assert response.status_code == 400
+
+
+@pytest.mark.parametrize('shared', [False, True])
+def test_equivalent_domains_share_account_limits(app, shared):
+    import os
+    from app import create_app
+    from app.models import db
+    uri = os.getenv('TEST_REDIS_URL')
+    if shared and not uri:
+        pytest.skip('TEST_REDIS_URL unset; shared normalization test not run')
+    options = {'TESTING': True, 'RATELIMIT_ENABLED': True,
+               'SQLALCHEMY_DATABASE_URI': app.config['SQLALCHEMY_DATABASE_URI'],
+               'LOGIN_ACCOUNT_LIMIT': '2/minute', 'LOGIN_IP_LIMIT': '100/minute',
+               'REGISTER_ACCOUNT_LIMIT': '2/minute', 'REGISTER_IP_LIMIT': '100/minute'}
+    if shared:
+        options.update(AUTH_RATE_LIMIT_MODE='shared', RATELIMIT_STORAGE_URI=uri)
+    apps = [create_app(options), create_app(options)] if shared else [create_app(options)]
+    try:
+        apps[0].extensions['smartlink_limiter'].reset()
+        for endpoint in ('login', 'register'):
+            for i, email in enumerate(['alias@example.com', 'alias@ｅxample.com', 'alias@exａmple.com']):
+                response = apps[i % len(apps)].test_client().post('/api/auth/' + endpoint,
+                    json={'email': email, 'password': PASSWORD}, environ_base={'REMOTE_ADDR': f'192.0.2.{i+1}'})
+                assert response.status_code == ([401, 401, 429] if endpoint == 'login' else [201, 409, 429])[i]
+    finally:
+        apps[0].extensions['smartlink_limiter'].reset()
+        for application in apps:
+            with application.app_context():
+                db.session.remove()
+                db.engine.dispose()

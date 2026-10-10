@@ -5,10 +5,17 @@ config = context.config
 
 
 def configure(connection=None, url=None):
+    if connection is not None and connection.dialect.name == 'sqlite':
+        # SQLAlchemy's logical transaction is insufficient with sqlite3 legacy
+        # transaction control: DDL otherwise commits before revision stamping.
+        raw = connection.connection.driver_connection
+        if not raw.in_transaction:
+            connection.exec_driver_sql('BEGIN')
     context.configure(
         connection=connection, url=url, target_metadata=db.metadata,
         compare_type=True, render_as_batch=True,
         literal_binds=connection is None,
+        transactional_ddl=True if connection is not None and connection.dialect.name == 'sqlite' else None,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -25,5 +32,5 @@ else:
         configure(connection=connection)
     else:
         from app import app
-        with app.app_context(), db.engine.connect() as connection:
+        with app.app_context(), db.engine.begin() as connection:
             configure(connection=connection)

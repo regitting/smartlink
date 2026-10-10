@@ -438,3 +438,29 @@ migration, ownership, registration/logout races, and one-time integration tests.
 Set `TEST_REDIS_URL` only to a disposable Redis instance to exercise shared counters
 across apps; its limiter key namespace is cleared by that test. Neither variable
 means those integrations passed unless the tests actually ran.
+
+### PR #4 audit hardening
+Authentication and account rate limits use the same email canonicalization,
+including equivalent Unicode domain spellings. Raw email inputs above 1,024
+characters are rejected before normalization; normalized identities remain ASCII
+and at most 254 characters. Separate IP counters apply even to invalid emails.
+Concurrent password-hash upgrades reload and verify the current hash, activity,
+and token version before issuing a token. Revocation after that final check still
+invalidates the issued token on its next use.
+
+SQLite migrations explicitly begin a real DDL transaction, so interrupted upgrades
+roll back schema changes and the revision marker together. PostgreSQL retains its
+existing transaction behavior. Back up and stop all writers before migrating.
+
+For SQLite databases partially upgraded by an earlier PR #4 build, **do not stamp
+0003 or repeatedly retry blindly**. Work on a verified backup/copy first. Inspect
+`alembic_version`, `PRAGMA table_info(link)`, the ownership index, and `app_user`.
+Prefer restoring the pre-upgrade backup and rerunning the fixed migration. If no
+backup exists, an operator must reconcile the partial schema: only when the marker
+is 0002, there are no user rows, every owner_id/deleted_at is NULL, and all original
+link/click records are verified, remove any new ownership index, then the new
+columns (SQLite 3.35+), and finally the empty app_user table inside an explicit
+transaction. Keep the revision at 0002 and retry the fixed upgrade on the copy.
+If any account or ownership/deletion data exists, preserve it and obtain a tailored
+recovery plan; removing those fields can expose private links. Never discard link
+or click rows or overwrite the original database during recovery.

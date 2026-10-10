@@ -115,6 +115,21 @@ def configure_auth(app):
         return response
 
 
+def canonical_email(value):
+    # Bound work before Unicode/IDNA normalization, including surrounding whitespace.
+    if not isinstance(value, str) or len(value) > 1024:
+        raise AuthError('Invalid email address', 'invalid_request', 400)
+    try:
+        email = validate_email(value.strip(), check_deliverability=False,
+                               allow_smtputf8=False).normalized.lower()
+        email.encode('ascii')
+        if len(email) > 254:
+            raise ValueError('email too long')
+    except (EmailNotValidError, UnicodeError, ValueError):
+        raise AuthError('Invalid email address', 'invalid_request', 400) from None
+    return email
+
+
 def limited(scope, setting, account=False):
     def decorate(function):
         @wraps(function)
@@ -122,7 +137,7 @@ def limited(scope, setting, account=False):
             if account:
                 body = request.get_json(silent=True)
                 email = body.get('email', '') if isinstance(body, dict) else ''
-                email = email.strip().lower() if isinstance(email, str) else ''
+                email = canonical_email(email)
                 key = hashlib.sha256(email.encode('utf-8', errors='replace')).hexdigest()
             else:
                 key = request.remote_addr or 'unknown'
@@ -196,12 +211,9 @@ def credentials():
         raise AuthError('Invalid email or password format', 'invalid_request', 400)
     try:
         password.encode('utf-8')
-        email = validate_email(email.strip(), check_deliverability=False, allow_smtputf8=False).normalized.lower()
-        email.encode('ascii')
-        if len(email) > 254:
-            raise ValueError('email too long')
-    except (EmailNotValidError, UnicodeError, ValueError):
-        raise AuthError('Invalid email address', 'invalid_request', 400) from None
+    except UnicodeError:
+        raise AuthError('Invalid password format', 'invalid_request', 400) from None
+    email = canonical_email(email)
     return email, password
 
 
@@ -236,14 +248,23 @@ def login():
         valid = False
     if not valid or user is None or not user.is_active:
         return error('Invalid email or password', 'invalid_credentials', 401)
+    user_id, version = user.id, user.token_version
+    # End the authentication read before a SQLite write or fresh state check.
+    db.session.rollback()
     if hasher.check_needs_rehash(stored):
         replacement = hasher.hash(password)
-        # Do not overwrite a concurrently changed password or issue a stale token.
-        changed = db.session.execute(update(User).where(User.id == user.id, User.password_hash == stored)
-                           .values(password_hash=replacement).execution_options(synchronize_session=False)).rowcount
+        db.session.execute(update(User).where(User.id == user_id, User.password_hash == stored)
+                           .values(password_hash=replacement).execution_options(synchronize_session=False))
         db.session.commit()
-        db.session.refresh(user)
-        if changed != 1 or not user.is_active:
+    user = db.session.get(User, user_id)
+    if user is None or not user.is_active or user.token_version != version:
+        return error('Invalid email or password', 'invalid_credentials', 401)
+    if user.password_hash != stored:
+        # Another login may have upgraded the hash; a password change must also
+        # be verified, never accepted simply because our conditional write lost.
+        try:
+            hasher.verify(user.password_hash, password)
+        except (VerificationError, InvalidHashError):
             return error('Invalid email or password', 'invalid_credentials', 401)
     now = int(time.time())
     token = jwt.encode({
