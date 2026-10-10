@@ -34,6 +34,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
 python -m pytest
+# Generate once and retain outside source control; reuse across restarts/workers.
+export JWT_SIGNING_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
 alembic upgrade head
 python -m flask --app wsgi:app run --port 8000
 ```
@@ -103,6 +105,7 @@ Compose provides PostgreSQL 16, a `pg_isready` health check, and the persistent
 `postgres_data` named volume. Store your environment values outside the repository
 or supply them in your shell. For a temporary local development password:
 ```bash
+export JWT_SIGNING_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
 export POSTGRES_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(24))')"
 export DATABASE_URL="postgresql+psycopg://smartlink:${POSTGRES_PASSWORD}@db:5432/smartlink"
 docker compose up -d db
@@ -127,8 +130,8 @@ For standalone SQLite Docker development, mount your own persistent directory at
 ```bash
 docker build -t smartlink .
 mkdir -p instance
-docker run --rm -v "$PWD/instance:/app/instance" smartlink alembic upgrade head
-docker run --rm -p 127.0.0.1:8000:8000 -v "$PWD/instance:/app/instance" smartlink
+docker run --rm -e JWT_SIGNING_KEY -v "$PWD/instance:/app/instance" smartlink alembic upgrade head
+docker run --rm -e JWT_SIGNING_KEY -p 127.0.0.1:8000:8000 -v "$PWD/instance:/app/instance" smartlink
 ```
 Do not run migrations against an existing unversioned database before following
 the adoption steps below.
@@ -270,3 +273,168 @@ aws logs get-log-events --log-group-name /ecs/smartlink ...
 ```
 
 Note: account IDs are replaced with <YOUR_ACCOUNT_ID> placeholders for security.
+
+## Authentication and authorization
+Accounts use Argon2id password hashes and HS256 bearer JWTs with a **60-minute**
+access lifetime. No refresh tokens are issued. Every authenticated request checks
+user activity and the token version in the database. `/api/auth/logout` revokes
+**all tokens for the user**, not just the supplied token. Requests already in
+progress may finish. Signing-key rotation immediately invalidates existing tokens.
+
+### Configuration
+`JWT_SIGNING_KEY` is mandatory for app startup and migration commands. Generate
+at least 32 random bytes independently of `SECRET_KEY`, retain the key outside
+source control, and provide the same key to every worker. Never use `SECRET_KEY=dev`
+as the signing key. Keep `DATABASE_URL`, limiter credentials, and tokens out of
+logs; the default database engine hides query parameter values.
+
+| Variable | Default / policy |
+| --- | --- |
+| `JWT_SIGNING_KEY` | Required; at least 32 bytes, generated cryptographically |
+| `JWT_ISSUER` / `JWT_AUDIENCE` | `smartlink` / `smartlink-api`; validated on every token |
+| `APP_ENV` | `development`; set explicitly to `production` when deploying |
+| `AUTH_RATE_LIMIT_MODE` | `local`, `shared`, or `ingress`; defaults to `local` |
+| `RATELIMIT_STORAGE_URI` | Required in `shared` mode, e.g. an external Redis URL |
+| `INGRESS_RATE_LIMITS_VERIFIED` | `0`; set to `1` only after verifying ingress enforcement |
+| `LOGIN_IP_LIMIT` / `LOGIN_ACCOUNT_LIMIT` | `30/minute` / `5/minute` |
+| `REGISTER_IP_LIMIT` / `REGISTER_ACCOUNT_LIMIT` | `10/minute` / `3/hour` |
+| `ANONYMOUS_CREATE_LIMIT` | `60/minute` |
+| `ALLOW_ANONYMOUS_LINK_CREATION` | `1`; set `0` to require login for creation |
+| `ALLOW_ANONYMOUS_ANALYTICS` | `1`; set `0` to stop public anonymous analytics |
+
+Passwords are 15–128 characters. Spaces and Unicode are supported, without
+trimming, normalization, composition rules, or truncation. Emails are ASCII,
+validated syntactically, trimmed, and lowercased for identity; dots and plus tags
+are retained. Lowercasing treats rare case-sensitive mailboxes as the same account.
+Email addresses are **not verified**. This PR does not provide password recovery,
+email changes, account deletion, MFA, or administrative roles.
+
+### Rate limits: local versus production
+Local development uses process-local memory and logs a warning. Tests normally
+disable limits and separately test enforcement. **Memory is not production-safe**:
+Compose/Gunicorn workers do not share counters, and restarting a process resets them.
+`APP_ENV=production` refuses local memory limiting.
+
+For application-level shared limits, set `AUTH_RATE_LIMIT_MODE=shared` and an
+external `RATELIMIT_STORAGE_URI`, such as Redis with authentication/TLS as required
+by your service. Redis is supported but not mandatory: compatible shared backends
+supported by Flask-Limiter can be configured with their appropriate drivers.
+Backend failures fail closed with 503; there is no memory fallback. Two independent
+app instances must share counters. Limit normalized accounts as well as source IPs,
+and use the existing trusted-proxy settings so clients cannot spoof the limiter IP.
+
+Alternatively set `AUTH_RATE_LIMIT_MODE=ingress` and
+`INGRESS_RATE_LIMITS_VERIFIED=1` when an equivalent shared ingress solution enforces
+registration/login limits per normalized account and IP, plus anonymous creation
+limits. This setting disables application limiting; it is an operator assertion,
+not proof of protection. Restrict direct backend access so the ingress cannot be
+bypassed, test enforcement across workers/instances, and ensure ingress responses
+use the documented JSON 429 contract and `Retry-After`. IP-only throttling is not
+equivalent to account-and-IP protection. No Redis or cloud resource is required by
+this configuration; no AWS infrastructure is modified in this PR.
+
+### Auth API
+Use JSON objects containing exactly `email` and `password` for registration/login:
+```bash
+curl -i -X POST http://localhost:8000/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"person@example.com","password":"a long example passphrase"}'
+curl -X POST http://localhost:8000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"person@example.com","password":"a long example passphrase"}'
+```
+Registration returns 201 with `{"user":{"id":1,"email":"person@example.com","created_at":"...Z"}}`.
+Duplicate normalized emails return 409 with `code=email_conflict` and never overwrite
+an account. **This deliberately exposes account existence**, including via status
+codes; throttling mitigates abuse but does not eliminate enumeration. Login returns
+the same generic 401 for an unknown email, wrong password, or inactive account.
+Unknown-account login verifies a dummy Argon2 hash to reduce timing differences.
+
+A successful login returns `access_token`, `token_type` (`Bearer`), `expires_in`
+(`3600`), and the public `user` object. Set `ACCESS_TOKEN` from that response in your
+shell without recording it in source control:
+```bash
+curl -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:8000/api/auth/me
+curl -X POST -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:8000/api/auth/logout
+```
+`me` returns `{"user":{...}}`; logout returns 204. Tokens are accepted only in the
+Authorization header, never query strings or cookies. Claims include a string
+user ID, issuer, audience, issuance/start/expiry times, random `jti`, and token
+version. The algorithm is fixed to HS256; required claims and lifetime are checked.
+There is up to 30 seconds of clock tolerance. Auth responses use `Cache-Control:
+no-store`. Use HTTPS in production and avoid persistent browser token storage;
+cookie authentication would require a separate CSRF design.
+
+### Owned links and management
+The existing `POST /api/links` body and `201 {"slug":"..."}` response are preserved.
+A valid bearer token assigns the new link to that user. An absent token creates an
+anonymous link by default; an invalid supplied token returns 401, never anonymous
+fallback. Ownership/internal fields cannot be supplied in the request.
+```bash
+curl -X POST http://localhost:8000/api/links \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"slug":"mine","target":"https://example.com"}'
+curl -H "Authorization: Bearer $ACCESS_TOKEN" 'http://localhost:8000/api/links?limit=20'
+curl -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:8000/api/links/mine
+curl -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:8000/api/links/mine/metrics
+curl -X PATCH http://localhost:8000/api/links/mine \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"disabled":true}'
+curl -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:8000/api/links/mine
+```
+Listing, details, PATCH, and DELETE require authentication and only access the
+caller's nondeleted links. Lists use descending IDs, `limit` 1–100 (default 20),
+and optional `before` cursor; response fields are `links` and `next_cursor`.
+Link objects include slug, destinations, expiry, one-time/disabled flags, and
+creation timestamp, without account secrets. PATCH accepts only `target`,
+`ab_targets`, `expires_at`, and boolean `disabled`, revalidating the resulting
+configuration. Slug, ownership, and `one_time` are immutable. Disabled (including consumed) one-time
+links cannot be re-enabled. Concurrent stale edits return 409; writes include
+ownership/state predicates in SQL.
+
+DELETE returns 204 and marks the link deleted/disabled, preserving click history
+and permanently reserving its slug. Deleted links disappear from listings,
+management, analytics, and redirects. Public QR generation still encodes a short
+URL, even for missing/deleted links; it does not expose private analytics.
+
+Owned analytics require the owning user. Other users and nonexistent resources
+receive identical JSON 404s. On the optional-auth analytics route, unauthenticated
+requests for private or missing slugs also receive identical 404s; mandatory-auth
+routes return 401 before looking up resources. Legacy and new anonymous links keep
+public redirects and public analytics by default, but cannot be claimed/managed
+merely by knowing a slug or logging in. Disabling anonymous creation/analytics is
+an explicit deployment compatibility change. Public redirects remain public for
+owned links too: ownership protects management and analytics, not the short URL.
+
+API errors retain a string `error` and add a stable `code`: 400 invalid request,
+401 missing/invalid credentials or tokens, 404 inaccessible/missing resource,
+409 email/slug conflict or invalid state, 429 rate-limited, and 503 temporary
+unavailability. Bodies above 1 MiB return 413. Invalid/expired/tampered/revoked tokens
+share `invalid_token`. No password hashes or tokens are exposed by user/link serializers.
+
+### Migration and rollout
+Back up and stop writers, export the signing key and limiter configuration, and
+run a **single** `alembic upgrade head` before starting the new image. Revision
+`0003` creates users and adds nullable ownership/deletion columns and the owner
+listing index. Existing links remain anonymous and all click rows are retained.
+SQLite adds a nullable REFERENCES column without rebuilding the referenced link
+table. SQLite account IDs use AUTOINCREMENT to prevent a deleted account ID from being
+reused while an old JWT exists. Both engines restrict deleting users with links; ownership never silently
+becomes anonymous. SQLite foreign keys are enabled on every application connection.
+Migration refuses orphaned clicks; reconcile them on a verified copy before retrying,
+without discarding historical rows automatically.
+
+For an original unversioned database, follow the earlier backup/schema-check and
+`stamp 0001` procedure, then upgrade through 0003. Do not stamp head. Existing 0002
+databases upgrade directly. Downgrading 0003 discards users and ownership, exposing
+formerly owned links under the anonymous policy; it requires explicit planning,
+not routine rollback. SQLite downgrade requires version 3.35+ for DROP COLUMN.
+Deletion/disable cannot recall a redirect already in progress. One-time consumption
+and the click remain in one transaction; failed inserts roll back the claim.
+A committed redirect can still consume the link if network delivery fails.
+
+Run `python -m pytest -ra` for all tests. Set `TEST_POSTGRES_URL` for real PostgreSQL
+migration, ownership, registration/logout races, and one-time integration tests.
+Set `TEST_REDIS_URL` only to a disposable Redis instance to exercise shared counters
+across apps; its limiter key namespace is cleared by that test. Neither variable
+means those integrations passed unless the tests actually ran.
