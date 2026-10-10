@@ -19,6 +19,13 @@ services:
     profiles: ["tools"]
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL locally}
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?Set an independently generated JWT signing key}
+      JWT_ISSUER: ${JWT_ISSUER:-smartlink}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-smartlink-api}
+      APP_ENV: ${APP_ENV:-development}
+      AUTH_RATE_LIMIT_MODE: ${AUTH_RATE_LIMIT_MODE:-local}
+      RATELIMIT_STORAGE_URI: ${RATELIMIT_STORAGE_URI:-}
+      INGRESS_RATE_LIMITS_VERIFIED: ${INGRESS_RATE_LIMITS_VERIFIED:-0}
     depends_on:
       db:
         condition: service_healthy
@@ -27,6 +34,20 @@ services:
     build: .
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL locally}
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?Set an independently generated JWT signing key}
+      JWT_ISSUER: ${JWT_ISSUER:-smartlink}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-smartlink-api}
+      APP_ENV: ${APP_ENV:-development}
+      AUTH_RATE_LIMIT_MODE: ${AUTH_RATE_LIMIT_MODE:-local}
+      RATELIMIT_STORAGE_URI: ${RATELIMIT_STORAGE_URI:-}
+      INGRESS_RATE_LIMITS_VERIFIED: ${INGRESS_RATE_LIMITS_VERIFIED:-0}
+      ALLOW_ANONYMOUS_LINK_CREATION: ${ALLOW_ANONYMOUS_LINK_CREATION:-1}
+      ALLOW_ANONYMOUS_ANALYTICS: ${ALLOW_ANONYMOUS_ANALYTICS:-1}
+      LOGIN_IP_LIMIT: ${LOGIN_IP_LIMIT:-30/minute}
+      LOGIN_ACCOUNT_LIMIT: ${LOGIN_ACCOUNT_LIMIT:-5/minute}
+      REGISTER_IP_LIMIT: ${REGISTER_IP_LIMIT:-10/minute}
+      REGISTER_ACCOUNT_LIMIT: ${REGISTER_ACCOUNT_LIMIT:-3/hour}
+      ANONYMOUS_CREATE_LIMIT: ${ANONYMOUS_CREATE_LIMIT:-60/minute}
       SECRET_KEY: ${SECRET_KEY:-dev}
       TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
     depends_on:

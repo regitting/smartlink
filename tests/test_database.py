@@ -23,7 +23,7 @@ def test_fresh_migrations_match_models(app):
     from app.models import db
     with app.app_context(), db.engine.connect() as connection:
         inspector = inspect(connection)
-        assert set(inspector.get_table_names()) == {'link', 'click', 'alembic_version'}
+        assert set(inspector.get_table_names()) == {'link', 'click', 'app_user', 'alembic_version'}
         assert {'name': 'ix_click_link_id', 'column_names': ['link_id'], 'unique': 0, 'dialect_options': {}} in inspector.get_indexes('click')
         assert compare_metadata(MigrationContext.configure(connection), db.metadata) == []
     assert app.test_cli_runner().invoke(args=['db-check']).exit_code == 0
@@ -107,8 +107,8 @@ def test_legacy_sqlite_stamp_preserves_data(app, tmp_path):
     migrate(legacy, action='stamp', revision='0001')
     migrate(legacy)
     with sqlite3.connect(path) as connection:
-        assert before == [connection.execute(f'SELECT * FROM {table}').fetchall() for table in ('link', 'click')]
-        assert connection.execute('SELECT version_num FROM alembic_version').fetchone() == ('0002',)
+        assert before == [connection.execute('SELECT id, slug, target, ab_targets_json, created_at, expires_at, one_time, disabled FROM link').fetchall(), connection.execute('SELECT * FROM click').fetchall()]
+        assert connection.execute('SELECT version_num FROM alembic_version').fetchone() == ('0003',)
         assert connection.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='ix_click_link_id'").fetchone()
     assert legacy.test_client().get('/legacy').status_code == 302
     assert legacy.test_client().get('/api/links/legacy/metrics').json['total'] == 2
@@ -124,7 +124,7 @@ def test_index_downgrade_preserves_rows(app, client):
     assert app.test_client().get('/api/ready').status_code == 503
     with app.app_context(), db.engine.connect() as connection:
         assert inspect(connection).get_indexes('click') == []
-        assert Link.query.one().slug == 'keep'
+        assert connection.exec_driver_sql('SELECT slug FROM link').scalar() == 'keep'
     migrate(app)
     assert app.test_client().get('/keep').status_code == 302
 

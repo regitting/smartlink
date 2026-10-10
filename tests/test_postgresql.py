@@ -27,7 +27,7 @@ def postgres_app(app, monkeypatch):
     application = None
     try:
         application = create_app({
-            'TESTING': True, 'SQLALCHEMY_DATABASE_URI': url,
+            'TESTING': True, 'RATELIMIT_ENABLED': False, 'SQLALCHEMY_DATABASE_URI': url,
             'SQLALCHEMY_ENGINE_OPTIONS': {'pool_pre_ping': True, 'connect_args': {
                 'connect_timeout': 5, 'options': f'-csearch_path={schema}',
             }},

@@ -47,7 +47,24 @@ def validate_target(value):
 
 db = SQLAlchemy()
 
+class User(db.Model):
+    __tablename__ = 'app_user'
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(254), unique=True, nullable=False)
+    password_hash = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=utc_now, nullable=False)
+    is_active = db.Column(db.Boolean, default=True, server_default=db.true(), nullable=False)
+    token_version = db.Column(db.Integer, default=0, server_default='0', nullable=False)
+    __table_args__ = (db.CheckConstraint('token_version >= 0', name='ck_user_token_version'),
+                      {'sqlite_autoincrement': True})
+    links = db.relationship('Link', back_populates='owner', passive_deletes='all')
+
+
 class Link(db.Model):
+    __table_args__ = (db.Index('ix_link_owner_id_id', 'owner_id', 'id'),)
+    owner_id = db.Column(db.Integer, db.ForeignKey('app_user.id', name='fk_link_owner'), nullable=True)
+    deleted_at = db.Column(db.DateTime, nullable=True)
+    owner = db.relationship('User', back_populates='links')
     id = db.Column(db.Integer, primary_key=True)
     slug = db.Column(db.String(64), unique=True, nullable=False)
     target = db.Column(db.String(2048))
