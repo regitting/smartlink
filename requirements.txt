@@ -4,3 +4,5 @@ gunicorn==21.2.0
 user-agents==2.2.0
 qrcode[pil]==7.4.2
 geoip2==4.8.0
+alembic==1.16.5
+psycopg[binary]==3.2.10

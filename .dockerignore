@@ -9,3 +9,10 @@ build/
 *.log
 instance/
 data/
+
+.env
+.env.*
+.envrc
+*.db
+*.sqlite
+*.sqlite3

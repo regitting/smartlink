@@ -108,7 +108,7 @@ class Link(db.Model):
 
 class Click(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    link_id = db.Column(db.Integer, db.ForeignKey('link.id'), nullable=False)
+    link_id = db.Column(db.Integer, db.ForeignKey('link.id'), nullable=False, index=True)
     ts = db.Column(db.DateTime, default=utc_now)
     ip = db.Column(db.String(64))
     referrer = db.Column(db.String(2048))

@@ -155,6 +155,12 @@ def test_proxy_ip_configuration(app, tmp_path, monkeypatch, hops, forwarded, exp
         'TRUSTED_PROXY_HOPS': hops,
         'ENABLE_DEBUG_IP': True,
     })
+    from alembic import command
+    from app.database import migration_config
+    with proxy_app.app_context(), db.engine.begin() as connection:
+        config = migration_config()
+        config.attributes['connection'] = connection
+        command.upgrade(config, 'head')
     from flask import request
     @proxy_app.before_request
     def observe_origin():
